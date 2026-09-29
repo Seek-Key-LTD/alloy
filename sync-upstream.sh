@@ -26,8 +26,15 @@ main() {
     git push origin main
   fi
 
-  # 推上游 tag 到 fork → 触发 build-publish
-  git push origin --tags
+  # 在我们的 main(已 merge upstream) 上打同名 tag 再推——
+  # 禁止推上游原始 tag(其树上有官方 CI, 会误触发), 本 workflow 只存在于 main 的树
+  git tag --list "v*" --sort=-version:refname | head -5
+  LATEST_UPSTREAM=
+  if [ -n "${LATEST_UPSTREAM:-}" ] && ! git rev-parse "origin/${LATEST_UPSTREAM}" >/dev/null 2>&1; then
+    git tag -f "$LATEST_UPSTREAM" main
+    git push origin "$LATEST_UPSTREAM"
+    echo "✓ tagged $LATEST_UPSTREAM on our main → build-publish 触发"
+  fi
 
   echo "✓ sync complete"
 }
