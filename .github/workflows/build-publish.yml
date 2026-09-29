@@ -120,53 +120,50 @@ jobs:
             sha256sum "$f" | awk '{print $1"  "$2}' > "$f.sha256"
           done
 
-      - name: Upload to IHEP S3
+      - name: Upload to IHEP S3 (AWS CLI, SigV4)
         env:
-          IHEP_S3_ACCESS: ${{ secrets.IHEP_S3_ACCESS }}
-          IHEP_S3_SECRET: ${{ secrets.IHEP_S3_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.IHEP_S3_ACCESS }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.IHEP_S3_SECRET }}
         run: |
-          curl -fsSL -o /usr/local/bin/mc https://github.com/minio/mc/releases/latest/download/mc-linux-amd64 && chmod +x /usr/local/bin/mc
-          /usr/local/bin/mc --version
-          mc alias set ihep https://fgws3-ocloud.ihep.ac.cn "$IHEP_S3_ACCESS" "$IHEP_S3_SECRET" --api S3v4
-          BASE="ihep/21579-lhhq-164014/alloy-releases"
+          EP=https://fgws3-ocloud.ihep.ac.cn
+          B=s3://21579-lhhq-164014/alloy-releases
+          aws --version
           for os_arch in linux/amd64 linux/arm64 linux/armv7 darwin/amd64 darwin/arm64; do
             os=${os_arch%%/*}; arch=${os_arch##*/}
-            mc cp "dist/alloy-${os}-${arch}"        "$BASE/$VERSION/$os/$arch/alloy-${os}-${arch}"
-            mc cp "dist/alloy-${os}-${arch}.sha256" "$BASE/$VERSION/$os/$arch/alloy-${os}-${arch}.sha256"
+            aws s3 cp "dist/alloy-${os}-${arch}"        "$B/$VERSION/$os/$arch/alloy-${os}-${arch}" --endpoint-url $EP
+            aws s3 cp "dist/alloy-${os}-${arch}.sha256" "$B/$VERSION/$os/$arch/alloy-${os}-${arch}.sha256" --endpoint-url $EP
           done
 
       - name: Verify remote SHA256 (key-agent standard — 防'上传了但没生效')
         env:
-          IHEP_S3_ACCESS: ${{ secrets.IHEP_S3_ACCESS }}
-          IHEP_S3_SECRET: ${{ secrets.IHEP_S3_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.IHEP_S3_ACCESS }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.IHEP_S3_SECRET }}
         run: |
-          mc alias set ihep https://fgws3-ocloud.ihep.ac.cn "$IHEP_S3_ACCESS" "$IHEP_S3_SECRET" --api S3v4
-          BASE="ihep/21579-lhhq-164014/alloy-releases"
+          EP=https://fgws3-ocloud.ihep.ac.cn
+          B=s3://21579-lhhq-164014/alloy-releases
           for os_arch in linux/amd64 linux/arm64 linux/armv7 darwin/amd64 darwin/arm64; do
             os=${os_arch%%/*}; arch=${os_arch##*/}
             name="alloy-${os}-${arch}"
-            mc cp "$BASE/$VERSION/$os/$arch/$name.sha256" /tmp/"$name".sha256
-            mc cp "$BASE/$VERSION/$os/$arch/$name"        /tmp/"$name"
+            aws s3 cp "$B/$VERSION/$os/$arch/$name.sha256" /tmp/"$name".sha256 --endpoint-url $EP
+            aws s3 cp "$B/$VERSION/$os/$arch/$name"        /tmp/"$name"        --endpoint-url $EP
             (cd /tmp && sha256sum -c "$name.sha256")
           done
           echo "✓ All 5 artifacts verified on remote"
 
       - name: Retention — keep current + previous (5×2=10)
         env:
-          IHEP_S3_ACCESS: ${{ secrets.IHEP_S3_ACCESS }}
-          IHEP_S3_SECRET: ${{ secrets.IHEP_S3_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.IHEP_S3_ACCESS }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.IHEP_S3_SECRET }}
         run: |
-          mc alias set ihep https://fgws3-ocloud.ihep.ac.cn "$IHEP_S3_ACCESS" "$IHEP_S3_SECRET" --api S3v4
-          BASE="ihep/21579-lhhq-164014/alloy-releases"
-          VERSIONS=$(mc ls --json "$BASE/" | jq -r '.key' | sed 's#/##' | grep -E '^v[0-9]' | sort -V)
+          EP=https://fgws3-ocloud.ihep.ac.cn
+          B=s3://21579-lhhq-164014/alloy-releases
+          VERSIONS=$(aws s3 ls "$B/" --endpoint-url $EP | awk '{print $2}' | grep -E '^v[0-9]' | sed 's#/##' | sort -V)
           echo "existing versions: $VERSIONS"
           KEEP=2
           OLD=$(echo "$VERSIONS" | head -n -$KEEP || true)
           if [ -z "$OLD" ]; then echo "nothing to prune"; exit 0; fi
           for v in $OLD; do
-            echo "PRUNE-DRYRUN: mc rm --recursive --force $BASE/$v/"
-          done
-          for v in $OLD; do
-            mc rm --recursive --force "$BASE/$v/"
+            echo "PRUNE: aws s3 rm $B/$v/ --recursive"
+            aws s3 rm "$B/$v/" --recursive --endpoint-url $EP
           done
           echo "✓ retention applied, kept latest $KEEP versions"
