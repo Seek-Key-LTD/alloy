@@ -20,6 +20,7 @@ permissions:
 
 env:
   BUILD_IMAGE: grafana/alloy-build-image:v0.1.35@sha256:9fa2a341b53503ce42cf9900c401d689a68ea67cdec6a20f53d72e3665fb8dc6
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.version }}
 
 jobs:
   linux-amd64:
@@ -29,7 +30,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
       - name: Build (journal enabled, native CGO)
         run: |
-          GO_TAGS="embedalloyui promtail_journal_enabled" GOOS=linux GOARCH=amd64 make alloy
+          GO_TAGS="embedalloyui promtail_journal_enabled" GOOS=linux GOARCH=amd64 VERSION="${VERSION#v}" make alloy
           mkdir -p dist && mv build/alloy dist/alloy-linux-amd64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -43,7 +44,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
       - name: Build (journal enabled, container arm64 cross toolchain — upstream-proven)
         run: |
-          GO_TAGS="embedalloyui promtail_journal_enabled" GOOS=linux GOARCH=arm64 make alloy
+          GO_TAGS="embedalloyui promtail_journal_enabled" GOOS=linux GOARCH=arm64 VERSION="${VERSION#v}" make alloy
           mkdir -p dist && mv build/alloy dist/alloy-linux-arm64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -57,7 +58,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
       - name: Build (CGO off — no journal on armv7, upstream does not ship this arch)
         run: |
-          CGO_ENABLED=0 GO_TAGS="netgo embedalloyui" GOOS=linux GOARCH=arm GOARM=7 make alloy
+          CGO_ENABLED=0 GO_TAGS="netgo embedalloyui" GOOS=linux GOARCH=arm GOARM=7 VERSION="${VERSION#v}" make alloy
           mkdir -p dist && mv build/alloy dist/alloy-linux-armv7
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -74,11 +75,11 @@ jobs:
           cache: false
       - name: Build arm64 (native, UI built here)
         run: |
-          CGO_LDFLAGS="-ld_classic $CGO_LDFLAGS" GO_TAGS="embedalloyui" GOOS=darwin GOARCH=arm64 make alloy
+          CGO_LDFLAGS="-ld_classic $CGO_LDFLAGS" GO_TAGS="embedalloyui" GOOS=darwin GOARCH=arm64 VERSION="${VERSION#v}" make alloy
           mkdir -p dist && mv build/alloy dist/alloy-darwin-arm64
       - name: Build amd64 (cross, reuse UI dist)
         run: |
-          GO_TAGS="embedalloyui" GOOS=darwin GOARCH=amd64 SKIP_UI_BUILD=1 make alloy
+          GO_TAGS="embedalloyui" GOOS=darwin GOARCH=amd64 SKIP_UI_BUILD=1 VERSION="${VERSION#v}" make alloy
           mv build/alloy dist/alloy-darwin-amd64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -100,14 +101,8 @@ jobs:
 
       - name: Resolve version
         run: |
-          if [ -n "$GITHUB_REF_TYPE" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            VERSION="${GITHUB_REF_NAME}"
-          elif [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
-          else
-            echo "::error::workflow_dispatch 需要传 version input"; exit 1
-          fi
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          if [ -z "$VERSION" ]; then echo "::error::workflow_dispatch 需要传 version input"; exit 1; fi
+          echo "building version: $VERSION"
 
       - name: Per-file sha256 (hashicorp convention)
         run: |
