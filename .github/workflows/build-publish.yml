@@ -125,7 +125,8 @@ jobs:
           IHEP_S3_ACCESS: ${{ secrets.IHEP_S3_ACCESS }}
           IHEP_S3_SECRET: ${{ secrets.IHEP_S3_SECRET }}
         run: |
-          curl -fsSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc && chmod +x /usr/local/bin/mc
+          curl -fsSL -o /usr/local/bin/mc https://github.com/minio/mc/releases/latest/download/mc-linux-amd64 && chmod +x /usr/local/bin/mc
+          /usr/local/bin/mc --version
           mc alias set ihep https://fgws3-ocloud.ihep.ac.cn "$IHEP_S3_ACCESS" "$IHEP_S3_SECRET" --api S3v4
           BASE="ihep/21579-lhhq-164014/alloy-releases"
           for os_arch in linux/amd64 linux/arm64 linux/armv7 darwin/amd64 darwin/arm64; do
