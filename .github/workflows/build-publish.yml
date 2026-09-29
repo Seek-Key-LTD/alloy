@@ -74,7 +74,7 @@ jobs:
           path: dist/alloy-linux-armv7
 
   darwin:
-    runs-on: macos-15-xlarge
+    runs-on: macos-15  # 标准 ARM runner; xlarge 未在 org 启用(6s 无 steps 即失败)
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
