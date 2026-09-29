@@ -1,0 +1,168 @@
+name: build-publish
+
+# Seek-Key-LTD 自维护构建管线（2026-09-29 收编）
+# 标准 = key-agent/hashicorp-binaries-sync 同款：5 架构 × 2 版本 = 10 包
+# 产物发布 IHEP S3 alloy-releases/（IHEP↔CT100 半小时同步进内网）
+# 注意：armv7 交叉编译 CGO_ENABLED=0，无 promtail_journal_enabled（journal 采集不可用，文件 tail 正常）
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（含 v 前缀，如 v1.20.1）；tag push 时自动取 ref'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  BUILD_IMAGE: grafana/alloy-build-image:v0.1.35@sha256:9fa2a341b53503ce42cf9900c401d689a68ea67cdec6a20f53d72e3665fb8dc6
+
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-latest
+    container: grafana/alloy-build-image:v0.1.35@sha256:9fa2a341b53503ce42cf9900c401d689a68ea67cdec6a20f53d72e3665fb8dc6
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Build (journal enabled, native CGO)
+        run: |
+          GO_TAGS="embedalloyui promtail_journal_enabled" GOOS=linux GOARCH=amd64 make alloy
+          mkdir -p dist && mv build/alloy dist/alloy-linux-amd64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: alloy-linux-amd64
+          path: dist/alloy-linux-amd64
+
+  linux-arm64:
+    runs-on: ubuntu-latest
+    container: grafana/alloy-build-image:v0.1.35@sha256:9fa2a341b53503ce42cf9900c401d689a68ea67cdec6a20f53d72e3665fb8dc6
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Build (journal enabled, container arm64 cross toolchain — upstream-proven)
+        run: |
+          GO_TAGS="embedalloyui promtail_journal_enabled" GOOS=linux GOARCH=arm64 make alloy
+          mkdir -p dist && mv build/alloy dist/alloy-linux-arm64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: alloy-linux-arm64
+          path: dist/alloy-linux-arm64
+
+  linux-armv7:
+    runs-on: ubuntu-latest
+    container: grafana/alloy-build-image:v0.1.35@sha256:9fa2a341b53503ce42cf9900c401d689a68ea67cdec6a20f53d72e3665fb8dc6
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Build (CGO off — no journal on armv7, upstream does not ship this arch)
+        run: |
+          CGO_ENABLED=0 GO_TAGS="netgo embedalloyui" GOOS=linux GOARCH=arm GOARM=7 make alloy
+          mkdir -p dist && mv build/alloy dist/alloy-linux-armv7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: alloy-linux-armv7
+          path: dist/alloy-linux-armv7
+
+  darwin:
+    runs-on: macos-15-xlarge
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build arm64 (native, UI built here)
+        run: |
+          CGO_LDFLAGS="-ld_classic $CGO_LDFLAGS" GO_TAGS="embedalloyui" GOOS=darwin GOARCH=arm64 make alloy
+          mkdir -p dist && mv build/alloy dist/alloy-darwin-arm64
+      - name: Build amd64 (cross, reuse UI dist)
+        run: |
+          GO_TAGS="embedalloyui" GOOS=darwin GOARCH=amd64 SKIP_UI_BUILD=1 make alloy
+          mv build/alloy dist/alloy-darwin-amd64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: alloy-darwin-arm64
+          path: dist/alloy-darwin-arm64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: alloy-darwin-amd64
+          path: dist/alloy-darwin-amd64
+
+  publish:
+    needs: [linux-amd64, linux-arm64, linux-armv7, darwin]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Resolve version
+        run: |
+          if [ -n "$GITHUB_REF_TYPE" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            echo "::error::workflow_dispatch 需要传 version input"; exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Per-file sha256 (hashicorp convention)
+        run: |
+          cd dist
+          ls -la
+          for f in alloy-*; do
+            sha256sum "$f" | awk '{print $1"  "$2}' > "$f.sha256"
+          done
+
+      - name: Upload to IHEP S3
+        env:
+          IHEP_S3_ACCESS: ${{ secrets.IHEP_S3_ACCESS }}
+          IHEP_S3_SECRET: ${{ secrets.IHEP_S3_SECRET }}
+        run: |
+          curl -fsSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc && chmod +x /usr/local/bin/mc
+          mc alias set ihep https://fgws3-ocloud.ihep.ac.cn "$IHEP_S3_ACCESS" "$IHEP_S3_SECRET" --api S3v4
+          BASE="ihep/21579-lhhq-164014/alloy-releases"
+          for os_arch in linux/amd64 linux/arm64 linux/armv7 darwin/amd64 darwin/arm64; do
+            os=${os_arch%%/*}; arch=${os_arch##*/}
+            mc cp "dist/alloy-${os}-${arch}"        "$BASE/$VERSION/$os/$arch/alloy-${os}-${arch}"
+            mc cp "dist/alloy-${os}-${arch}.sha256" "$BASE/$VERSION/$os/$arch/alloy-${os}-${arch}.sha256"
+          done
+
+      - name: Verify remote SHA256 (key-agent standard — 防'上传了但没生效')
+        env:
+          IHEP_S3_ACCESS: ${{ secrets.IHEP_S3_ACCESS }}
+          IHEP_S3_SECRET: ${{ secrets.IHEP_S3_SECRET }}
+        run: |
+          mc alias set ihep https://fgws3-ocloud.ihep.ac.cn "$IHEP_S3_ACCESS" "$IHEP_S3_SECRET" --api S3v4
+          BASE="ihep/21579-lhhq-164014/alloy-releases"
+          for os_arch in linux/amd64 linux/arm64 linux/armv7 darwin/amd64 darwin/arm64; do
+            os=${os_arch%%/*}; arch=${os_arch##*/}
+            name="alloy-${os}-${arch}"
+            mc cp "$BASE/$VERSION/$os/$arch/$name.sha256" /tmp/"$name".sha256
+            mc cp "$BASE/$VERSION/$os/$arch/$name"        /tmp/"$name"
+            (cd /tmp && sha256sum -c "$name.sha256")
+          done
+          echo "✓ All 5 artifacts verified on remote"
+
+      - name: Retention — keep current + previous (5×2=10)
+        env:
+          IHEP_S3_ACCESS: ${{ secrets.IHEP_S3_ACCESS }}
+          IHEP_S3_SECRET: ${{ secrets.IHEP_S3_SECRET }}
+        run: |
+          mc alias set ihep https://fgws3-ocloud.ihep.ac.cn "$IHEP_S3_ACCESS" "$IHEP_S3_SECRET" --api S3v4
+          BASE="ihep/21579-lhhq-164014/alloy-releases"
+          VERSIONS=$(mc ls --json "$BASE/" | jq -r '.key' | sed 's#/##' | grep -E '^v[0-9]' | sort -V)
+          echo "existing versions: $VERSIONS"
+          KEEP=2
+          OLD=$(echo "$VERSIONS" | head -n -$KEEP || true)
+          if [ -z "$OLD" ]; then echo "nothing to prune"; exit 0; fi
+          for v in $OLD; do
+            echo "PRUNE-DRYRUN: mc rm --recursive --force $BASE/$v/"
+          done
+          for v in $OLD; do
+            mc rm --recursive --force "$BASE/$v/"
+          done
+          echo "✓ retention applied, kept latest $KEEP versions"
