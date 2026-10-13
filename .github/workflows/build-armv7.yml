@@ -1,0 +1,50 @@
+name: build-armv7
+
+on:
+  push:
+    branches: ['armv7']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（含 v 前缀，如 v1.20.1）'
+        required: false
+        default: 'v1.20.1'
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ github.event.inputs.version || 'v1.20.1' }}
+
+jobs:
+  linux-armv7:
+    runs-on: ubuntu-latest
+    container: grafana/alloy-build-image:v0.1.35@sha256:9fa2a341b53503ce42cf9900c401d689a68ea67cdec6a20f53d72e3665fb8dc6
+    steps:
+      - uses: actions/checkout@v4
+      - name: git safe.directory
+        run: git config --global --add safe.directory '*'
+      - name: Build armv7 (stripped CGO_ENABLED=0)
+        run: |
+          CGO_ENABLED=0 GO_TAGS="netgo embedalloyui" GOOS=linux GOARCH=arm GOARM=7 VERSION="${VERSION#v}" LDFLAGS="-s -w" make alloy
+          mkdir -p dist && mv build/alloy dist/alloy-linux-armv7
+      - name: Generate sha256
+        run: |
+          cd dist
+          sha256sum alloy-linux-armv7 > alloy-linux-armv7.sha256
+          ls -lh alloy-linux-armv7
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: alloy-linux-armv7
+          path: dist/*
+      - name: Upload to IHEP S3 (AWS CLI, SigV4)
+        if: env.AWS_ACCESS_KEY_ID != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.IHEP_S3_ACCESS }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.IHEP_S3_SECRET }}
+        run: |
+          EP=https://fgws3-ocloud.ihep.ac.cn
+          B=s3://21579-lhhq-164014/alloy-releases
+          aws s3 cp dist/alloy-linux-armv7 "$B/$VERSION/linux/armv7/alloy-linux-armv7" --endpoint-url $EP
+          aws s3 cp dist/alloy-linux-armv7.sha256 "$B/$VERSION/linux/armv7/alloy-linux-armv7.sha256" --endpoint-url $EP
